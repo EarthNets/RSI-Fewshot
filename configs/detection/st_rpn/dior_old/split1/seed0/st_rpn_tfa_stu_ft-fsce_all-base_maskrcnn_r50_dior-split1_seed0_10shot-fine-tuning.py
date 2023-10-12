@@ -1,0 +1,129 @@
+_base_ = [
+    '../../../../_base_/datasets/fine_tune_based/few_shot_dior_bs8.py',
+    '../../../../_base_/schedules/adamw_10k.py',
+    '../../../tfa_maskrcnn_r50.py',
+    '../../../../_base_/default_runtime.py'
+]
+seed = 0
+# classes splits are predefined in FewShotVOCDataset
+# FewShotVOCDefaultDataset predefine ann_cfg for model reproducibility.
+data = dict(
+    train=dict(
+        type='FewShotDIORDataset',
+        # ann_cfg=[dict(method='TFA', setting='SPLIT1_3SHOT')],
+        num_novel_shots=10,
+        num_base_shots=None,
+        classes='ALL_CLASSES_SPLIT1',
+        save_dataset=True,
+        save_dataset_path=f'work_dirs/data_infos/dior-split1_10shot_seed{seed}.json',
+        balance_base_novel=True
+    ),
+    val=dict(classes='ALL_CLASSES_SPLIT1'),
+    test=dict(classes='ALL_CLASSES_SPLIT1')
+)
+model = dict(
+    type='NegRPNTFA',
+    frozen_parameters=[
+        'backbone',
+        # 'neck',
+        # 'rpn_head.rpn_reg',
+        # 'roi_head.bbox_head.shared_fcs',
+        'roi_head.bbox_head', # freeze the teacher net
+    ],
+    rpn_head=dict(
+        type='STRPNHead',
+        st_thre=0.1
+    ),
+    roi_head=dict(
+        type='STRoIHead',
+        stu_bbox_head=dict(
+            type='CosineSimSTBBoxHead',
+            num_shared_fcs=2,
+            num_classes=20,
+            scale=20,
+            drop_rate=0.3,
+            st_thre=0.98
+        )
+    ),
+    train_cfg=dict(
+        rpn=dict(
+            assigner=dict(
+                type='MaxIoUAssigner',
+                pos_iou_thr=0.5,
+                neg_iou_thr=0.2,
+                min_pos_iou=0.2,
+                match_low_quality=True,
+                ignore_iof_thr=-1),
+            sampler=dict(
+                type='RandomSampler',
+                num=256,
+                pos_fraction=1.0,
+                neg_pos_ub=-1,
+                add_gt_as_proposals=False),
+            allowed_border=-1,
+            pos_weight=-1,
+            debug=False),
+        rcnn=dict(
+            assigner=dict(
+                type='MaxIoUAssigner',
+                pos_iou_thr=0.5,
+                neg_iou_thr=0.2,
+                min_pos_iou=0.2,
+                match_low_quality=False,
+                ignore_iof_thr=-1),
+            sampler_pos=dict(
+                type='RandomSampler',
+                num=64,
+                pos_fraction=1.0,
+                neg_pos_ub=0,
+                add_gt_as_proposals=True),
+            sampler_neg=dict(
+                type='RandomSampler',
+                num=64,
+                pos_fraction=0.0,
+                neg_pos_ub=16,
+                add_gt_as_proposals=False),
+            pos_weight=-1,
+            debug=False),
+        rpn_proposal=dict(
+            neg_filter_thre=0.4 # background boxes with scores higher than this threshold will be removed
+        )
+    )
+)
+
+evaluation = dict(
+    class_splits=['BASE_CLASSES_SPLIT1', 'NOVEL_CLASSES_SPLIT1']
+)
+# checkpoint_config = dict(interval=12000)
+# optimizer = dict(lr=0.001)
+# lr_config = dict(
+#     warmup_iters=10, step=[
+#         11000,
+#     ])
+# runner = dict(max_iters=12000)
+# base model needs to be initialized with following script:
+#   tools/detection/misc/initialize_bbox_head.py
+# please refer to configs/detection/tfa/README.md for more details.
+load_from = ('work_dirs/tfa_maskrcnn_r50_20k_dior-split1_randomized_head/base_model_random_init_bbox_head.pth')
+
+expr_name = 'st_rpn_tfa_stu_ft-fsce_all-base_maskrcnn_r50_dior-split1_seed0_10shot_fine-tuning'
+init_kwargs = {
+    'project': 'rsi-fewshot',
+    'entity': 'tum-tanmlh',
+    'name': expr_name,
+    'resume': 'never'
+}
+log_config = dict(
+    interval=50,
+    hooks=[
+        dict(type='TextLoggerHook'),
+        # dict(type='TensorboardLoggerHook')
+        dict(type='RSIDetWandbHook',
+             init_kwargs=init_kwargs,
+             interval=201,
+             log_checkpoint=False,
+             log_checkpoint_metadata=False,
+             num_eval_images=30,
+             bbox_score_thr=0.0,
+             eval_after_run=True)
+    ])
